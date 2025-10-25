@@ -1,0 +1,111 @@
+version: 1
+
+# 全局控制项
+global:
+  logs: true                       # 是否记录详细日志（debug/info）
+  log_level: "info"               # debug | info | warn | error
+  output:
+    json: true                    # 生成结构化 JSON 输出
+  concurrency: 10                 # 全局并发 worker 数
+  rate_limit_per_target: 5        # 每目标每秒最大请求数（平滑器）
+  dry_run: false                  # 仅解析/输出计划，不实际发起网络请求（便于校验剧本）
+  auth:                           # 如果需要通过代理或认证访问外网，可在此配置
+    http_proxy: ""                # e.g. "http://127.0.0.1:3128"
+    socks5_proxy: ""
+    username: ""
+    password: ""
+
+# 要测试的目标：支持 domain/url 或 IP（裸 IP 会走 ip-direct 流程）
+links:
+  - "https://www.baidu.com"
+  - "https://www.bing.com"
+  - "https://www.weixin.qq.com"
+  - "114.114.114.114"
+
+# DNS 模块配置
+dns:
+  enabled: true
+  # 默认解析器（如果为空则使用系统 resolver）
+  nameserver: "223.5.5.5"
+  port: 53
+  timeout_ms: 3000
+  retries: 2
+  query_types:                      # 顺序尝试的查询类型
+    - A
+    - AAAA
+    - CNAME
+    - TXT
+  # DoH / DoT / DoQ 子配置，空字符串或 disabled 可关闭
+  doh:
+    enabled: true
+    nameserver: "https://223.5.5.5/dns-query"
+    bootstrap_ips: ["223.5.5.5"]   # 如果需要在 DoH 之前做 UDP A 查询以获得 IP
+    timeout_ms: 4000
+  dot:
+    enabled: true
+    nameserver: "tls://120.53.53.53"
+    timeout_ms: 4000
+  doq:
+    enabled: false
+    nameserver: "quic://1.1.1.1:784"
+    timeout_ms: 4000
+  record_raw_response: true         # 将原始 DNS 响应保存到 evidence
+
+# ip-direct 模块（当 links 中为裸 IP 或用户指定直接按 IP 测试）
+ip-direct:
+  enabled: true
+  ports: [80, 443]                 # 需要尝试连接的目标端口
+  tcp_connect_timeout_ms: 4000
+  tls_handshake_if_port_443: true  # 若 443 成功则进行 TLS 握手收集证书
+  allow_untrusted_cert: false      # 是否在 TLS 层允许不受信任的证书（用于探测 MITM）
+  retries: 1
+
+# TLS / SNI / ECH / 指纹模块
+tls:
+  enabled: true
+  timeout_ms: 5000
+  sni:
+    send_sni: true                 # 是否在 ClientHello 中发送 SNI
+  ech:
+    enabled: true                  # 是否尝试 ECH（如果库支持）
+    policy: "auto"                 # auto | disable | force  (force 可能会触发失败路径)
+    test_server_config: ""         # 可选：指定 ECH 配置 source
+
+# HTTP / HTTPS 模块
+http:
+  enabled: true
+  follow_redirects: true
+  max_redirects: 5
+  timeout_ms: 8000
+  methods: ["GET", "HEAD"]        # 支持多个方法的组合
+  headers:
+    User-Agent: "DNT/1.0"
+    Accept: "*/*"
+  path_variants: ["/", "/robots.txt", "/.well-known/"]
+  record_response_body: false      # 若启用，会保存响应体
+  response_body_max_bytes: 65536
+
+# QUIC / HTTP/3 模块
+quic:
+  enabled: true
+  timeout_ms: 5000
+  alpn: ["h3", "h3-29", "h3-30"]   # ALPN 列表用于协商 HTTP/3
+  versions: ["v1", "draft-29"]
+  handshake_attempts: 2
+  udp_bind_addr: ""                # e.g., "0.0.0.0:0" 默认系统分配
+  record_initial_packets: true     # 保存握手初始包摘要（非完整 pcap）
+
+# traceroute 与 ping 模块
+network-probes:
+  traceroute:
+    enabled: true
+    mode: "icmp"                   # icmp | udp | tcp
+    max_hops: 30
+    per_hop_timeout_ms: 2000
+    probe_ports: [33434]           # 仅当 mode == tcp/udp 有效
+  ping:
+    enabled: true
+    count: 4
+    interval_ms: 1000
+    timeout_ms: 3000
+    packet_size: 56
