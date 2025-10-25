@@ -39,6 +39,7 @@ dns:
   doh:
     enabled: true
     nameserver: "https://223.5.5.5/dns-query"
+    # 当前 DoH 仅返回 A / AAAA 记录（依赖 JSON API），其它类型会继续走 UDP/TCP
     bootstrap_ips: ["223.5.5.5"]   # 如果需要在 DoH 之前做 UDP A 查询以获得 IP
     timeout_ms: 4000
   dot:

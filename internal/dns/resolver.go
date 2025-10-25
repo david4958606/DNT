@@ -14,6 +14,12 @@ import (
 	"github.com/david4958606/DNT/internal/parser"
 )
 
+const (
+	transportPlain = "udp"
+	transportDoT   = "dot"
+	transportDoH   = "doh"
+)
+
 // Options controls how ResolveBatch executes.
 type Options struct {
 	// Workers limits concurrency. Values <=0 default to len(tasks) or 1.
@@ -29,6 +35,7 @@ type Resolver struct {
 	udpClient   *mdns.Client
 	tcpClient   *mdns.Client
 	rawRecorder bool
+	encrypted   *encryptedResolver
 }
 
 type queryType struct {
@@ -45,9 +52,10 @@ type Result struct {
 
 // QueryResult represents the records returned for a single RR type.
 type QueryResult struct {
-	Type    string
-	Answers []ResourceRecord
-	Raw     []byte
+	Type      string
+	Transport string
+	Answers   []ResourceRecord
+	Raw       []byte
 }
 
 // ResourceRecord is a simplified view of dns.RR.
@@ -60,8 +68,9 @@ type ResourceRecord struct {
 
 // QueryError captures failures for individual question types.
 type QueryError struct {
-	Type  string
-	Error string
+	Type      string
+	Transport string
+	Error     string
 }
 
 // NewResolver validates DNS config and prepares clients.
@@ -88,6 +97,11 @@ func NewResolver(cfg parser.DNSConfig) (*Resolver, error) {
 		return nil, err
 	}
 
+	enc, err := newEncryptedResolver(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Resolver{
 		cfg:        cfg,
 		serverAddr: address,
@@ -102,6 +116,7 @@ func NewResolver(cfg parser.DNSConfig) (*Resolver, error) {
 			Timeout: timeout,
 		},
 		rawRecorder: cfg.RecordRawResponse,
+		encrypted:   enc,
 	}, nil
 }
 
@@ -161,12 +176,19 @@ func (r *Resolver) Resolve(ctx context.Context, task parser.DNSTask) Result {
 		qRes, qErr := r.queryOnce(ctx, task.Host, qtype)
 		if qErr != nil {
 			result.QueryErrors = append(result.QueryErrors, QueryError{
-				Type:  qtype.name,
-				Error: qErr.Error(),
+				Type:      qtype.name,
+				Transport: transportPlain,
+				Error:     qErr.Error(),
 			})
-			continue
+		} else {
+			result.QueryResults = append(result.QueryResults, qRes)
 		}
-		result.QueryResults = append(result.QueryResults, qRes)
+
+		if r.encrypted != nil {
+			eResults, eErrors := r.encrypted.Query(ctx, task.Host, qtype, r.rawRecorder)
+			result.QueryResults = append(result.QueryResults, eResults...)
+			result.QueryErrors = append(result.QueryErrors, eErrors...)
+		}
 	}
 	return result
 }
@@ -179,28 +201,7 @@ func (r *Resolver) queryOnce(ctx context.Context, host string, qtype queryType) 
 	if err != nil {
 		return QueryResult{}, err
 	}
-	var raw []byte
-	if r.rawRecorder {
-		if packed, packErr := response.Pack(); packErr == nil {
-			raw = packed
-		}
-	}
-	answers := make([]ResourceRecord, 0, len(response.Answer))
-	for _, rr := range response.Answer {
-		if rr.Header().Rrtype != qtype.code {
-			continue
-		}
-		answers = append(answers, simplifyRR(rr))
-	}
-
-	qRes := QueryResult{
-		Type:    qtype.name,
-		Answers: answers,
-	}
-	if len(raw) > 0 {
-		qRes.Raw = append([]byte(nil), raw...)
-	}
-	return qRes, nil
+	return buildQueryResult(response, qtype, r.rawRecorder, transportPlain), nil
 }
 
 func (r *Resolver) exchangeContext(ctx context.Context, msg *mdns.Msg) (*mdns.Msg, error) {
@@ -260,6 +261,31 @@ func normalizeQueryTypes(types []string) ([]queryType, error) {
 		})
 	}
 	return result, nil
+}
+
+func buildQueryResult(msg *mdns.Msg, qtype queryType, recordRaw bool, transport string) QueryResult {
+	var raw []byte
+	if recordRaw {
+		if packed, err := msg.Pack(); err == nil {
+			raw = packed
+		}
+	}
+	answers := make([]ResourceRecord, 0, len(msg.Answer))
+	for _, rr := range msg.Answer {
+		if rr.Header().Rrtype != qtype.code {
+			continue
+		}
+		answers = append(answers, simplifyRR(rr))
+	}
+	qRes := QueryResult{
+		Type:      qtype.name,
+		Transport: transport,
+		Answers:   answers,
+	}
+	if len(raw) > 0 {
+		qRes.Raw = append([]byte(nil), raw...)
+	}
+	return qRes
 }
 
 func simplifyRR(rr mdns.RR) ResourceRecord {
